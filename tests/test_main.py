@@ -1,10 +1,13 @@
 import io
+import shutil
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 import main
+
+HAS_KISSAT = shutil.which("kissat") is not None
 
 
 class CostasCliTests(unittest.TestCase):
@@ -91,6 +94,50 @@ class CostasCliTests(unittest.TestCase):
         self.assertEqual(stderr, "")
         self.assertIn("Validation failed", stdout)
         self.assertIn("not a valid Costas array", stdout)
+
+    def test_search_finds_example_for_small_order(self) -> None:
+        exit_code, stdout, stderr = self.run_cli("search", "4", "--time-limit", "1")
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("Status: example found", stdout)
+        self.assertIn("Repository status: 2 stored array(s)", stdout)
+        self.assertIn("database: found", stdout)
+
+    def test_export_cnf_writes_file(self) -> None:
+        output = self.db_dir.parent / "order4.cnf"
+
+        exit_code, stdout, stderr = self.run_cli("export-cnf", "4", str(output))
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertTrue(output.exists())
+        header = output.read_text(encoding="utf-8").splitlines()[0]
+        self.assertTrue(header.startswith("p cnf "))
+        self.assertIn("Wrote CNF for N=4", stdout)
+
+    @unittest.skipUnless(HAS_KISSAT, "kissat is required for SAT backend tests")
+    def test_sat_backend_finds_example_when_database_is_empty(self) -> None:
+        self.write_order_file(5, ["No Costas arrays."])
+        output = self.db_dir.parent / "order6.cnf"
+
+        exit_code, stdout, stderr = self.run_cli(
+            "search",
+            "6",
+            "--backend",
+            "sat",
+            "--time-limit",
+            "5",
+            "--cnf-path",
+            str(output),
+            "--keep-cnf",
+        )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertTrue(output.exists())
+        self.assertIn("Winning backend: sat", stdout)
+        self.assertIn("sat: found", stdout)
 
 
 if __name__ == "__main__":

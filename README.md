@@ -3,6 +3,18 @@
 This repository stores a curated dataset of Costas arrays and provides a small
 Python CLI for exploring and validating that data.
 
+To use the solver-backed search command, install dependencies first:
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
+To use the external SAT backend, install `kissat`:
+
+```bash
+brew install kissat
+```
+
 ## What Is A Costas Array?
 
 A Costas array is a permutation of `1..N` with two defining properties:
@@ -40,6 +52,10 @@ Rules for each file:
 - Each non-empty line is a whitespace-separated permutation of `1..N`.
 - Blank lines are ignored.
 - Files with no stored arrays contain the marker `No Costas arrays.`
+
+Important: an empty file in this repository means "no stored example is
+currently recorded here". It should not be interpreted as a mathematical proof
+that no Costas array exists for that order.
 
 The dataset currently ships with files for orders `2` through `100`.
 
@@ -81,6 +97,36 @@ Validate a single order:
 python3 main.py validate 34
 ```
 
+Search for an example or a proof of impossibility for one order:
+
+```bash
+python3 main.py search 32 --time-limit 30
+```
+
+Choose a specific solver backend:
+
+```bash
+python3 main.py search 32 --backend ortools --time-limit 60
+```
+
+Use the native C++ backtracking backend:
+
+```bash
+python3 main.py search 32 --backend native --time-limit 60
+```
+
+Use the external SAT backend:
+
+```bash
+python3 main.py search 32 --backend sat --time-limit 60
+```
+
+Export the DIMACS CNF without solving it:
+
+```bash
+python3 main.py export-cnf 32 /tmp/costas_32.cnf
+```
+
 Use a different database directory:
 
 ```bash
@@ -104,9 +150,26 @@ The validator checks that each stored row:
 - is unique within its file
 - satisfies the Costas property
 
+The search command uses [Z3](https://github.com/Z3Prover/z3) and
+[OR-Tools CP-SAT](https://developers.google.com/optimization) with a standard
+Costas-array encoding:
+
+- variables form a permutation of `1..N`
+- for each distance `d`, all differences `x[i + d] - x[i]` are distinct
+- small symmetry-breaking constraints reduce duplicate search work
+- before invoking a solver, the `auto` backend also tries fast witness searches
+  based on neighboring stored orders
+- the `native` backend compiles and runs a C++ depth-first searcher with
+  fail-first branching
+- the `sat` backend exports a DIMACS CNF and invokes
+  [kissat](https://github.com/arminbiere/kissat)
+
 ## Notes
 
 - The repository is intentionally lightweight: it validates stored data, but it
   does not generate Costas arrays from scratch.
 - The file naming convention keeps the original `Costas_essense` prefix already
   present in the dataset.
+- For background on the open search problem, see the
+  [CSPLib Costas array page](https://www.csplib.org/Problems/prob076/), which
+  notes that some orders such as `32` remain unresolved in the literature.

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
 from dataclasses import dataclass, field
+from itertools import combinations
+from math import comb
 from pathlib import Path
 import re
 from typing import Iterator, Sequence
@@ -38,10 +41,35 @@ class ValidationResult:
         return not self.issues
 
 
+@dataclass(frozen=True)
+class SearchAttempt:
+    backend: str
+    status: str
+    detail: str
+    example: list[int] | None = None
+
+
+@dataclass(frozen=True)
+class SearchResult:
+    order: int
+    status: str
+    time_limit_seconds: float
+    backend: str
+    attempts: list[SearchAttempt] = field(default_factory=list)
+    example: list[int] | None = None
+
+
 def positive_int(value: str) -> int:
     parsed = int(value)
     if parsed < 1:
         raise argparse.ArgumentTypeError("value must be a positive integer")
+    return parsed
+
+
+def positive_float(value: str) -> float:
+    parsed = float(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be a positive number")
     return parsed
 
 
@@ -113,6 +141,32 @@ def read_arrays_for_order(order: int, db_dir: Path) -> list[list[int]]:
     return [array for _, array in iter_arrays_from_file(path)]
 
 
+def augment_array_by_one(array: Sequence[int], insert_column: int, insert_row: int) -> list[int]:
+    augmented = []
+    for index, value in enumerate(array):
+        if index == insert_column:
+            augmented.append(insert_row)
+        augmented.append(value + (1 if value >= insert_row else 0))
+
+    if insert_column == len(array):
+        augmented.append(insert_row)
+
+    return augmented
+
+
+def delete_positions(array: Sequence[int], positions: Sequence[int]) -> list[int]:
+    removed = set(positions)
+    remaining = [value for index, value in enumerate(array) if index not in removed]
+    removed_values = sorted(array[index] for index in removed)
+
+    compressed = []
+    for value in remaining:
+        shift = sum(1 for removed_value in removed_values if removed_value < value)
+        compressed.append(value - shift)
+
+    return compressed
+
+
 def summarize_dataset(db_dir: Path) -> list[OrderSummary]:
     summaries = []
     for order_file in discover_order_files(db_dir):
@@ -170,6 +224,419 @@ def validate_dataset(db_dir: Path, order: int | None = None) -> list[ValidationR
         return [validate_order(order, db_dir)]
 
     return [validate_order(order_file.order, db_dir) for order_file in discover_order_files(db_dir)]
+
+
+def search_via_database(order: int, db_dir: Path) -> SearchAttempt | None:
+    path = db_dir / f"Costas_essense_N={order}.txt"
+    if not path.is_file():
+        return None
+
+    arrays = read_arrays_for_order(order, db_dir)
+    if not arrays:
+        return None
+
+    return SearchAttempt(
+        backend="database",
+        status="found",
+        detail=f"repository already stores {len(arrays)} example(s) for order {order}",
+        example=arrays[0],
+    )
+
+
+def search_via_neighbors(
+    order: int,
+    db_dir: Path,
+    *,
+    candidate_budget: int,
+) -> SearchAttempt:
+    checked = 0
+    details = []
+
+    previous_path = db_dir / f"Costas_essense_N={order - 1}.txt"
+    if previous_path.is_file():
+        previous_arrays = read_arrays_for_order(order - 1, db_dir)
+        if not previous_arrays:
+            details.append(f"stored order {order - 1} has no recorded arrays to augment")
+        else:
+            total_candidates = len(previous_arrays) * order * order
+            if total_candidates <= candidate_budget:
+                for array in previous_arrays:
+                    for insert_column in range(order):
+                        for insert_row in range(1, order + 1):
+                            checked += 1
+                            candidate = augment_array_by_one(array, insert_column, insert_row)
+                            if is_costas_array(candidate):
+                                return SearchAttempt(
+                                    backend="neighbors",
+                                    status="found",
+                                    detail=(
+                                        f"found a witness after checking {checked} one-point augmentations "
+                                        f"from stored order {order - 1}"
+                                    ),
+                                    example=candidate,
+                                )
+                details.append(
+                    f"checked {total_candidates} one-point augmentations from stored order {order - 1}"
+                )
+            else:
+                details.append(
+                    f"skipped {total_candidates} one-point augmentations from order {order - 1} "
+                    f"(budget {candidate_budget})"
+                )
+
+    for gap in (1, 2):
+        higher_order = order + gap
+        higher_path = db_dir / f"Costas_essense_N={higher_order}.txt"
+        if not higher_path.is_file():
+            continue
+
+        higher_arrays = read_arrays_for_order(higher_order, db_dir)
+        if not higher_arrays:
+            continue
+
+        delete_choices = comb(higher_order, gap)
+        total_candidates = len(higher_arrays) * delete_choices
+        if total_candidates > candidate_budget:
+            details.append(
+                f"skipped {total_candidates} deletion candidates from stored order {higher_order} "
+                f"(budget {candidate_budget})"
+            )
+            continue
+
+        for array in higher_arrays:
+            for positions in combinations(range(higher_order), gap):
+                checked += 1
+                candidate = delete_positions(array, positions)
+                if is_costas_array(candidate):
+                    return SearchAttempt(
+                        backend="neighbors",
+                        status="found",
+                        detail=(
+                            f"found a witness after checking {checked} deletions from "
+                            f"stored order {higher_order}"
+                        ),
+                        example=candidate,
+                    )
+
+        details.append(
+            f"checked {total_candidates} deletion candidates from stored order {higher_order}"
+        )
+
+    if not details:
+        details.append("no usable neighboring stored orders were available")
+
+    return SearchAttempt(
+        backend="neighbors",
+        status="unknown",
+        detail="; ".join(details),
+    )
+
+
+def search_costas_array_z3(order: int, *, time_limit_seconds: float) -> SearchAttempt:
+    try:
+        from z3 import Distinct, Int, Solver, sat, unsat
+    except ImportError as exc:
+        raise RuntimeError(
+            "search requires z3-solver; install dependencies with 'python3 -m pip install -r requirements.txt'"
+        ) from exc
+
+    timeout_ms = max(1, int(time_limit_seconds * 1000))
+    variables = [Int(f"x_{index}") for index in range(order)]
+    solver = Solver()
+    solver.set("timeout", timeout_ms)
+
+    for variable in variables:
+        solver.add(variable >= 1, variable <= order)
+
+    solver.add(Distinct(variables))
+
+    for distance in range(1, order):
+        differences = [variables[index + distance] - variables[index] for index in range(order - distance)]
+        if len(differences) > 1:
+            solver.add(Distinct(differences))
+
+    # Break simple mirror symmetries to help the search.
+    solver.add(variables[0] < variables[-1])
+    solver.add(variables[0] <= (order + 1) // 2)
+
+    result = solver.check()
+    if result == sat:
+        model = solver.model()
+        example = [model.evaluate(variable).as_long() for variable in variables]
+        return SearchAttempt(
+            backend="z3",
+            status="found",
+            detail=f"Z3 found a witness within {time_limit_seconds:.1f}s",
+            example=example,
+        )
+
+    if result == unsat:
+        return SearchAttempt(
+            backend="z3",
+            status="unsat",
+            detail=f"Z3 proved infeasibility within {time_limit_seconds:.1f}s",
+        )
+
+    return SearchAttempt(
+        backend="z3",
+        status="unknown",
+        detail=f"Z3 returned unknown after {time_limit_seconds:.1f}s",
+    )
+
+
+def build_native_solver() -> Path:
+    source = ROOT_DIR / "native" / "costas_native.cpp"
+    binary = ROOT_DIR / "native" / "costas_native"
+    if binary.exists() and binary.stat().st_mtime >= source.stat().st_mtime:
+        return binary
+
+    subprocess.run(
+        [
+            "g++",
+            "-O3",
+            "-std=c++17",
+            str(source),
+            "-o",
+            str(binary),
+        ],
+        check=True,
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+    )
+    return binary
+
+
+def search_costas_array_native(order: int, *, time_limit_seconds: float) -> SearchAttempt:
+    try:
+        binary = build_native_solver()
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.strip() or exc.stdout.strip() or str(exc)
+        raise RuntimeError(f"failed to build native solver: {stderr}") from exc
+
+    try:
+        result = subprocess.run(
+            [str(binary), str(order), f"{time_limit_seconds}"],
+            check=False,
+            cwd=ROOT_DIR,
+            capture_output=True,
+            text=True,
+        )
+    except OSError as exc:
+        raise RuntimeError(f"failed to run native solver: {exc}") from exc
+
+    parsed = {}
+    for line in result.stdout.splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        parsed[key.strip()] = value.strip()
+
+    status = parsed.get("status", "unknown")
+    nodes = parsed.get("nodes", "0")
+    if status == "found":
+        example = [int(value) for value in parsed.get("example", "").split()]
+        return SearchAttempt(
+            backend="native",
+            status="found",
+            detail=f"native C++ search found a witness after exploring {nodes} nodes",
+            example=example,
+        )
+
+    if status == "unsat":
+        return SearchAttempt(
+            backend="native",
+            status="unsat",
+            detail=f"native C++ search proved infeasibility after exploring {nodes} nodes",
+        )
+
+    return SearchAttempt(
+        backend="native",
+        status="unknown",
+        detail=f"native C++ search returned unknown after exploring {nodes} nodes",
+    )
+
+
+def search_costas_array_sat(
+    order: int,
+    *,
+    time_limit_seconds: float,
+    cnf_path: Path | None = None,
+    keep_cnf: bool = False,
+) -> SearchAttempt:
+    from costas_sat import solve_costas_with_kissat
+
+    result = solve_costas_with_kissat(
+        order,
+        time_limit_seconds=time_limit_seconds,
+        cnf_path=cnf_path,
+        keep_cnf=keep_cnf,
+    )
+
+    return SearchAttempt(
+        backend="sat",
+        status=result.status,
+        detail=result.detail,
+        example=result.example,
+    )
+
+
+def search_costas_array_ortools(order: int, *, time_limit_seconds: float) -> SearchAttempt:
+    try:
+        from ortools.sat.python import cp_model
+    except ImportError as exc:
+        raise RuntimeError(
+            "search requires ortools; install dependencies with 'python3 -m pip install -r requirements.txt'"
+        ) from exc
+
+    model = cp_model.CpModel()
+    variables = [model.new_int_var(0, order - 1, f"x_{index}") for index in range(order)]
+    inverse = [model.new_int_var(0, order - 1, f"inv_{index}") for index in range(order)]
+
+    model.add_all_different(variables)
+    model.add_inverse(variables, inverse)
+
+    for distance in range(1, order):
+        differences = [
+            model.new_int_var(-(order - 1), order - 1, f"d_{distance}_{index}")
+            for index in range(order - distance)
+        ]
+        for index, difference in enumerate(differences):
+            model.add(difference == variables[index + distance] - variables[index])
+        if len(differences) > 1:
+            model.add_all_different(differences)
+
+    first = variables[0]
+    model.add(first <= variables[-1])
+    model.add(first <= (order - 1) - variables[0])
+    model.add(first <= (order - 1) - variables[-1])
+    model.add(first <= inverse[0])
+    model.add(first <= inverse[-1])
+    model.add(first <= (order - 1) - inverse[0])
+    model.add(first <= (order - 1) - inverse[-1])
+
+    solver = cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = time_limit_seconds
+    solver.parameters.num_search_workers = 8
+
+    status = solver.solve(model)
+    if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        example = [solver.value(variable) + 1 for variable in variables]
+        return SearchAttempt(
+            backend="ortools",
+            status="found",
+            detail=f"OR-Tools found a witness within {time_limit_seconds:.1f}s",
+            example=example,
+        )
+
+    if status == cp_model.INFEASIBLE:
+        return SearchAttempt(
+            backend="ortools",
+            status="unsat",
+            detail=f"OR-Tools proved infeasibility within {time_limit_seconds:.1f}s",
+        )
+
+    return SearchAttempt(
+        backend="ortools",
+        status="unknown",
+        detail=f"OR-Tools returned unknown after {time_limit_seconds:.1f}s",
+    )
+
+
+def search_costas_array(
+    order: int,
+    db_dir: Path,
+    *,
+    time_limit_seconds: float,
+    backend: str,
+    candidate_budget: int,
+    cnf_path: Path | None = None,
+    keep_cnf: bool = False,
+) -> SearchResult:
+    attempts = []
+
+    database_attempt = search_via_database(order, db_dir)
+    if database_attempt is not None:
+        attempts.append(database_attempt)
+        return SearchResult(
+            order=order,
+            status="found",
+            time_limit_seconds=time_limit_seconds,
+            backend="database",
+            attempts=attempts,
+            example=database_attempt.example,
+        )
+
+    neighbor_attempt = search_via_neighbors(order, db_dir, candidate_budget=candidate_budget)
+    attempts.append(neighbor_attempt)
+    if neighbor_attempt.status == "found":
+        return SearchResult(
+            order=order,
+            status="found",
+            time_limit_seconds=time_limit_seconds,
+            backend="neighbors",
+            attempts=attempts,
+            example=neighbor_attempt.example,
+        )
+
+    solver_attempts = []
+    if backend == "z3":
+        solver_attempts = [("z3", time_limit_seconds)]
+    elif backend == "ortools":
+        solver_attempts = [("ortools", time_limit_seconds)]
+    elif backend == "native":
+        solver_attempts = [("native", time_limit_seconds)]
+    elif backend == "sat":
+        solver_attempts = [("sat", time_limit_seconds)]
+    else:
+        native_time = time_limit_seconds * 0.4
+        sat_time = time_limit_seconds - native_time
+        solver_attempts = [("native", native_time), ("sat", sat_time)]
+
+    for solver_name, solver_time in solver_attempts:
+        if solver_time <= 0:
+            continue
+
+        if solver_name == "ortools":
+            attempt = search_costas_array_ortools(order, time_limit_seconds=solver_time)
+        elif solver_name == "native":
+            attempt = search_costas_array_native(order, time_limit_seconds=solver_time)
+        elif solver_name == "sat":
+            attempt = search_costas_array_sat(
+                order,
+                time_limit_seconds=solver_time,
+                cnf_path=cnf_path,
+                keep_cnf=keep_cnf,
+            )
+        else:
+            attempt = search_costas_array_z3(order, time_limit_seconds=solver_time)
+
+        attempts.append(attempt)
+        if attempt.status == "found":
+            return SearchResult(
+                order=order,
+                status="found",
+                time_limit_seconds=time_limit_seconds,
+                backend=solver_name,
+                attempts=attempts,
+                example=attempt.example,
+            )
+        if attempt.status == "unsat":
+            return SearchResult(
+                order=order,
+                status="unsat",
+                time_limit_seconds=time_limit_seconds,
+                backend=solver_name,
+                attempts=attempts,
+            )
+
+    return SearchResult(
+        order=order,
+        status="unknown",
+        time_limit_seconds=time_limit_seconds,
+        backend=backend,
+        attempts=attempts,
+    )
 
 
 def render_summary(summaries: Sequence[OrderSummary], *, show_all: bool) -> str:
@@ -252,6 +719,55 @@ def render_validation(results: Sequence[ValidationResult], *, db_dir: Path) -> t
     )
 
 
+def render_search(result: SearchResult, *, stored_count: int | None) -> tuple[int, str]:
+    lines = [
+        f"Search result for N={result.order}",
+        f"Time limit: {result.time_limit_seconds:.1f}s",
+        f"Winning backend: {result.backend}",
+    ]
+
+    if stored_count is None:
+        lines.append("Repository status: no local data file for this order")
+    else:
+        lines.append(f"Repository status: {stored_count} stored array(s)")
+
+    if result.attempts:
+        lines.append("Attempts:")
+        for attempt in result.attempts:
+            lines.append(f"  - {attempt.backend}: {attempt.status} ({attempt.detail})")
+
+    if result.status == "found":
+        lines.append("Status: example found")
+        lines.append("Example:")
+        lines.append("  " + " ".join(str(value) for value in result.example or []))
+        return 0, "\n".join(lines)
+
+    if result.status == "unsat":
+        lines.append("Status: proved impossible")
+        lines.append("The solver reported that no Costas array exists for this order.")
+        return 0, "\n".join(lines)
+
+    lines.append("Status: no conclusion")
+    lines.append(
+        "No example was found and infeasibility was not proved within the requested time limit."
+    )
+    lines.append(
+        "An empty data file in this repository should be treated as 'no stored example', not as a proof."
+    )
+    return 2, "\n".join(lines)
+
+
+def export_cnf(order: int, output_path: Path) -> str:
+    from costas_sat import write_costas_cnf
+
+    stats = write_costas_cnf(order, output_path.resolve())
+    return (
+        f"Wrote CNF for N={order} to {stats.path}\n"
+        f"Variables: {stats.variable_count}\n"
+        f"Clauses: {stats.clause_count}"
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Explore and validate the Costas array dataset."
@@ -294,6 +810,47 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional single order N to validate.",
     )
 
+    search_parser = subparsers.add_parser(
+        "search",
+        help="Use Z3 to search for an example or prove infeasibility for one order.",
+    )
+    search_parser.add_argument("order", type=positive_int, help="Order N to search.")
+    search_parser.add_argument(
+        "--time-limit",
+        type=positive_float,
+        default=30.0,
+        help="Solver time limit in seconds.",
+    )
+    search_parser.add_argument(
+        "--backend",
+        choices=("auto", "native", "ortools", "sat", "z3"),
+        default="auto",
+        help="Search backend to use after database and neighbor heuristics.",
+    )
+    search_parser.add_argument(
+        "--candidate-budget",
+        type=positive_int,
+        default=200000,
+        help="Maximum number of neighbor-generated candidates to inspect.",
+    )
+    search_parser.add_argument(
+        "--cnf-path",
+        type=Path,
+        help="Optional path for the generated CNF when using the SAT backend.",
+    )
+    search_parser.add_argument(
+        "--keep-cnf",
+        action="store_true",
+        help="Keep the generated CNF file when using the SAT backend.",
+    )
+
+    export_parser = subparsers.add_parser(
+        "export-cnf",
+        help="Write a DIMACS CNF encoding for one order.",
+    )
+    export_parser.add_argument("order", type=positive_int, help="Order N to encode.")
+    export_parser.add_argument("output", type=Path, help="Destination .cnf path.")
+
     return parser
 
 
@@ -318,7 +875,30 @@ def main(argv: Sequence[str] | None = None) -> int:
             exit_code, message = render_validation(results, db_dir=db_dir)
             print(message)
             return exit_code
-    except (FileNotFoundError, ValueError) as exc:
+
+        if args.command == "search":
+            path = db_dir / f"Costas_essense_N={args.order}.txt"
+            stored_count = None
+            if path.is_file():
+                stored_count = len(read_arrays_for_order(args.order, db_dir))
+
+            result = search_costas_array(
+                args.order,
+                db_dir,
+                time_limit_seconds=args.time_limit,
+                backend=args.backend,
+                candidate_budget=args.candidate_budget,
+                cnf_path=args.cnf_path.resolve() if args.cnf_path else None,
+                keep_cnf=args.keep_cnf,
+            )
+            exit_code, message = render_search(result, stored_count=stored_count)
+            print(message)
+            return exit_code
+
+        if args.command == "export-cnf":
+            print(export_cnf(args.order, args.output))
+            return 0
+    except (FileNotFoundError, RuntimeError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
