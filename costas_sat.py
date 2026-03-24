@@ -141,6 +141,7 @@ def _build_extra_clauses(
     assignments: tuple[tuple[int, int], ...],
     window4_radius: int,
     forbidden_patterns_path: Path | None = None,
+    clique_cuts_path: Path | None = None,
 ) -> list[list[int]]:
     domain_result = allowed_rows_by_column(order, assignments)
     if domain_result.status == "infeasible":
@@ -189,7 +190,24 @@ def _build_extra_clauses(
                     ]
                 )
 
-    return assignment_clauses + domain_clauses + window_clauses + forbidden_clauses
+    clique_clauses = []
+    if clique_cuts_path is not None and clique_cuts_path.is_file():
+        import json
+        with clique_cuts_path.open(encoding="utf-8") as handle:
+            clique_data = json.load(handle)
+        for clique in clique_data:
+            for i in range(len(clique)):
+                pA = clique[i]
+                for j in range(i + 1, len(clique)):
+                    pB = clique[j]
+                    literals = set()
+                    for c_off, ri in enumerate(pA[1:]):
+                        literals.add(-_grid_var(order, pA[0] - 1 + c_off, ri - 1))
+                    for c_off, ri in enumerate(pB[1:]):
+                        literals.add(-_grid_var(order, pB[0] - 1 + c_off, ri - 1))
+                    clique_clauses.append(sorted(literals))
+
+    return assignment_clauses + domain_clauses + window_clauses + forbidden_clauses + clique_clauses
 
 
 def write_costas_cnf(
@@ -199,12 +217,14 @@ def write_costas_cnf(
     assignments: tuple[tuple[int, int], ...] = (),
     window4_radius: int = 0,
     forbidden_patterns_path: Path | None = None,
+    clique_cuts_path: Path | None = None,
 ) -> CnfStats:
     extra_clauses = _build_extra_clauses(
         order,
         assignments=assignments,
         window4_radius=window4_radius,
         forbidden_patterns_path=forbidden_patterns_path,
+        clique_cuts_path=clique_cuts_path,
     )
     stats = compute_cnf_stats(order, output_path, extra_clause_count=len(extra_clauses))
 

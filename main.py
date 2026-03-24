@@ -562,6 +562,7 @@ def search_costas_array_sat(
     assignments: Sequence[tuple[int, int]] = (),
     window4_radius: int = 0,
     forbidden_patterns_path: Path | None = None,
+    clique_cuts_path: Path | None = None,
 ) -> SearchAttempt:
     if sat_solver == "cadical":
         from costas_sat import solve_costas_with_cadical
@@ -574,6 +575,7 @@ def search_costas_array_sat(
             assignments=tuple(assignments),
             window4_radius=window4_radius,
             forbidden_patterns_path=forbidden_patterns_path,
+            clique_cuts_path=clique_cuts_path,
         )
     else:
         from costas_sat import solve_costas_with_kissat
@@ -586,6 +588,7 @@ def search_costas_array_sat(
             assignments=tuple(assignments),
             window4_radius=window4_radius,
             forbidden_patterns_path=forbidden_patterns_path,
+            clique_cuts_path=clique_cuts_path,
         )
 
     return SearchAttempt(
@@ -671,6 +674,7 @@ def search_costas_array(
     sat_solver: str = "kissat",
     sat_window4_radius: int = 0,
     sat_forbidden_patterns_path: Path | None = None,
+    sat_clique_cuts_path: Path | None = None,
 ) -> SearchResult:
     attempts = []
 
@@ -740,6 +744,7 @@ def search_costas_array(
                 assignments=assignments,
                 window4_radius=sat_window4_radius,
                 forbidden_patterns_path=sat_forbidden_patterns_path,
+                clique_cuts_path=sat_clique_cuts_path,
             )
         else:
             attempt = search_costas_array_z3(order, time_limit_seconds=solver_time)
@@ -1018,6 +1023,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Optional JSON file mapping start_column to a list of globally forbidden 4-column tuples.",
     )
+    search_parser.add_argument(
+        "--sat-clique-cuts",
+        type=Path,
+        help="Optional JSON file containing lists of maximal conflict cliques.",
+    )
 
     export_parser = subparsers.add_parser(
         "export-cnf",
@@ -1086,6 +1096,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 sat_solver=args.sat_solver,
                 sat_window4_radius=args.sat_window4_radius,
                 sat_forbidden_patterns_path=args.sat_forbidden_patterns,
+                sat_clique_cuts_path=args.sat_clique_cuts,
             )
             exit_code, message = render_search(result, stored_count=stored_count)
             print(message)

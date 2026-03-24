@@ -89,6 +89,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Optional JSON file mapping start_column to a list of globally forbidden 4-column tuples.",
     )
+    parser.add_argument(
+        "--clique-cuts",
+        type=Path,
+        help="Optional JSON file containing lists of maximal conflict cliques to bind with hyper-cuts.",
+    )
     return parser
 
 
@@ -144,6 +149,7 @@ def solve_relaxation(
     quad_mode: str = "none",
     quad_radius: int = 2,
     forbidden_patterns_path: Path | None = None,
+    clique_cuts_path: Path | None = None,
 ) -> RelaxationResult:
     domain_result = allowed_rows_by_column(order, assignments)
     if domain_result.status == "infeasible":
@@ -450,6 +456,24 @@ def solve_relaxation(
     objective = solver.Objective()
     objective.SetMinimization()
 
+    if clique_cuts_path is not None and clique_cuts_path.is_file():
+        with clique_cuts_path.open(encoding="utf-8") as handle:
+            clique_data = json.load(handle)
+        for i, clique in enumerate(clique_data):
+            clique_sum_ct = solver.Constraint(-solver.infinity(), 1.0, f"clique_{i}_sum")
+            for j, pA in enumerate(clique):
+                y_var = solver.NumVar(0.0, 1.0, f"clique_{i}_p_{j}")
+                clique_sum_ct.SetCoefficient(y_var, 1.0)
+                
+                force_ct = solver.Constraint(-3.0, solver.infinity(), f"clique_{i}_p_{j}_force")
+                force_ct.SetCoefficient(y_var, 1.0)
+                for c_off, ri in enumerate(pA[1:]):
+                    try:
+                        v = x[(pA[0] - 1 + c_off + 1, ri)]
+                        force_ct.SetCoefficient(v, -1.0)
+                    except KeyError:
+                        pass
+                        
     status_code = solver.Solve()
     solver_status = solver_status_name(status_code)
     if status_code in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE):
@@ -482,6 +506,7 @@ def main_entry(argv: Sequence[str] | None = None) -> int:
         quad_mode=args.quads,
         quad_radius=args.quad_radius,
         forbidden_patterns_path=args.forbidden_patterns,
+        clique_cuts_path=args.clique_cuts,
     )
 
     print(f"status={result.status}")
