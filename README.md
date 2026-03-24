@@ -115,16 +115,98 @@ Use the native C++ backtracking backend:
 python3 main.py search 32 --backend native --time-limit 60
 ```
 
+Fix one or more native-search coordinates for a subproblem:
+
+```bash
+python3 main.py search 32 --backend native --time-limit 60 --assign 1=1 --assign 32=17
+```
+
 Use the external SAT backend:
 
 ```bash
 python3 main.py search 32 --backend sat --time-limit 60
 ```
 
+Use shard assignments with SAT too, and optionally add redundant local 4-column
+endpoint clauses:
+
+```bash
+python3 main.py search 32 --backend sat --time-limit 60 --assign 1=1 --assign 32=13 --sat-window4-radius 2
+```
+
+Pick the SAT solver explicitly:
+
+```bash
+python3 main.py search 32 --backend sat --sat-solver cadical --time-limit 180
+```
+
 Export the DIMACS CNF without solving it:
 
 ```bash
 python3 main.py export-cnf 32 /tmp/costas_32.cnf
+```
+
+Export a shard-aware CNF with fixed assignments and the same endpoint-window
+clauses:
+
+```bash
+python3 main.py export-cnf 32 /tmp/costas_32_hybrid.cnf --assign 1=1 --assign 32=13 --sat-window4-radius 2
+```
+
+Run a repeatable backend comparison suite and store logs:
+
+```bash
+python3 scripts/run_search_suite.py 32 --time-limit 180
+```
+
+Run native endpoint shards in parallel and store one result per shard:
+
+```bash
+python3 scripts/run_native_shards.py 32 --time-limit 300 --workers 8
+```
+
+Split the shard set across multiple machines:
+
+```bash
+python3 scripts/run_native_shards.py 32 --time-limit 300 --workers 8 --shard-stride 2 --shard-offset 0
+```
+
+Summarize dyadic difference-layer statistics for research work:
+
+```bash
+python3 scripts/analyze_dyadic_profiles.py 16 31 34
+```
+
+Build a low-energy near-miss cloud for function-space analysis of one order:
+
+```bash
+python3 scripts/build_near_miss_cloud.py 32 --restarts 32 --steps 60 --samples-per-step 80 --top-k 120
+```
+
+This writes canonicalized near-miss nodes, a sampled transposition graph, and
+reference feature rows for nearby stored orders under
+`artifacts/near-miss-cloud/n<order>/`.
+
+Mine recurring bad widths from that cloud and feed them back into the native
+search as branch-order guidance:
+
+```bash
+python3 scripts/mine_width_pressure.py artifacts/near-miss-cloud/n32/near_miss_nodes.csv --max-energy 20 --top-widths 8
+python3 scripts/run_native_shards.py 32 --time-limit 300 --workers 8 --focus-widths 1,2,3,4
+```
+
+Solve a shard-aware LP relaxation on selected widths:
+
+```bash
+python3 scripts/lp_shard_relaxation.py 32 --assign 1=1 --assign 32=13 --widths all --triangles window4 --solver PDLP --time-limit 60
+python3 scripts/run_lp_shards.py 32 --widths all --triangles window4 --solver PDLP --time-limit 60 --workers 8
+```
+
+Add a 4-column endpoint-window layer on top of the triangle relaxation:
+
+```bash
+python3 scripts/lp_shard_relaxation.py 32 --assign 1=1 --assign 32=13 --widths 1,2,3,4 --triangles window4 --quads endpoints --quad-radius 2 --solver PDLP --time-limit 60
+python3 scripts/run_lp_shards.py 32 --widths 1,2,3,4 --triangles window4 --quads endpoints --quad-radius 2 --solver PDLP --time-limit 60 --workers 8
 ```
 
 Use a different database directory:
@@ -160,9 +242,13 @@ Costas-array encoding:
 - before invoking a solver, the `auto` backend also tries fast witness searches
   based on neighboring stored orders
 - the `native` backend compiles and runs a C++ depth-first searcher with
-  fail-first branching
+  fail-first branching, optional fixed assignments, shard-friendly endpoint
+  splitting, and dyadic parity/mod-4 pruning
 - the `sat` backend exports a DIMACS CNF and invokes
   [kissat](https://github.com/arminbiere/kissat)
+
+For the open `N=32` case, see the research memo at
+[`docs/n32_research_agenda.md`](./docs/n32_research_agenda.md).
 
 ## Notes
 

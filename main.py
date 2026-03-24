@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+import platform
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -73,6 +75,41 @@ def positive_float(value: str) -> float:
     return parsed
 
 
+def parse_assignment_specs(raw_assignments: Sequence[str], *, order: int) -> list[tuple[int, int]]:
+    assignments_by_column: dict[int, int] = {}
+    columns_by_row: dict[int, int] = {}
+
+    for raw_assignment in raw_assignments:
+        match = re.fullmatch(r"(\d+)=(\d+)", raw_assignment.strip())
+        if match is None:
+            raise ValueError(
+                f"invalid assignment '{raw_assignment}'; expected COLUMN=ROW using 1-based coordinates"
+            )
+
+        column = int(match.group(1))
+        row = int(match.group(2))
+        if not 1 <= column <= order:
+            raise ValueError(f"column {column} is outside 1..{order}")
+        if not 1 <= row <= order:
+            raise ValueError(f"row {row} is outside 1..{order}")
+
+        previous_row = assignments_by_column.get(column)
+        if previous_row is not None and previous_row != row:
+            raise ValueError(
+                f"column {column} was assigned both row {previous_row} and row {row}"
+            )
+        previous_column = columns_by_row.get(row)
+        if previous_column is not None and previous_column != column:
+            raise ValueError(
+                f"row {row} was assigned to both column {previous_column} and column {column}"
+            )
+
+        assignments_by_column[column] = row
+        columns_by_row[row] = column
+
+    return sorted(assignments_by_column.items())
+
+
 def is_permutation(array: Sequence[int]) -> bool:
     n = len(array)
     return set(array) == set(range(1, n + 1))
@@ -139,6 +176,10 @@ def iter_arrays_from_file(path: Path) -> Iterator[tuple[int, list[int]]]:
 def read_arrays_for_order(order: int, db_dir: Path) -> list[list[int]]:
     path = order_file_path(order, db_dir)
     return [array for _, array in iter_arrays_from_file(path)]
+
+
+def matches_assignments(array: Sequence[int], assignments: Sequence[tuple[int, int]]) -> bool:
+    return all(array[column - 1] == row for column, row in assignments)
 
 
 def augment_array_by_one(array: Sequence[int], insert_column: int, insert_row: int) -> list[int]:
@@ -226,7 +267,12 @@ def validate_dataset(db_dir: Path, order: int | None = None) -> list[ValidationR
     return [validate_order(order_file.order, db_dir) for order_file in discover_order_files(db_dir)]
 
 
-def search_via_database(order: int, db_dir: Path) -> SearchAttempt | None:
+def search_via_database(
+    order: int,
+    db_dir: Path,
+    *,
+    assignments: Sequence[tuple[int, int]] = (),
+) -> SearchAttempt | None:
     path = db_dir / f"Costas_essense_N={order}.txt"
     if not path.is_file():
         return None
@@ -234,6 +280,27 @@ def search_via_database(order: int, db_dir: Path) -> SearchAttempt | None:
     arrays = read_arrays_for_order(order, db_dir)
     if not arrays:
         return None
+
+    if assignments:
+        for array in arrays:
+            if matches_assignments(array, assignments):
+                return SearchAttempt(
+                    backend="database",
+                    status="found",
+                    detail=(
+                        f"repository already stores an example for order {order} "
+                        "that matches the fixed assignments"
+                    ),
+                    example=array,
+                )
+        return SearchAttempt(
+            backend="database",
+            status="unknown",
+            detail=(
+                f"repository stores {len(arrays)} example(s) for order {order}, "
+                "but none satisfy the fixed assignments"
+            ),
+        )
 
     return SearchAttempt(
         backend="database",
@@ -248,6 +315,7 @@ def search_via_neighbors(
     db_dir: Path,
     *,
     candidate_budget: int,
+    assignments: Sequence[tuple[int, int]] = (),
 ) -> SearchAttempt:
     checked = 0
     details = []
@@ -265,7 +333,9 @@ def search_via_neighbors(
                         for insert_row in range(1, order + 1):
                             checked += 1
                             candidate = augment_array_by_one(array, insert_column, insert_row)
-                            if is_costas_array(candidate):
+                            if is_costas_array(candidate) and matches_assignments(
+                                candidate, assignments
+                            ):
                                 return SearchAttempt(
                                     backend="neighbors",
                                     status="found",
@@ -307,7 +377,7 @@ def search_via_neighbors(
             for positions in combinations(range(higher_order), gap):
                 checked += 1
                 candidate = delete_positions(array, positions)
-                if is_costas_array(candidate):
+                if is_costas_array(candidate) and matches_assignments(candidate, assignments):
                     return SearchAttempt(
                         backend="neighbors",
                         status="found",
@@ -387,7 +457,20 @@ def search_costas_array_z3(order: int, *, time_limit_seconds: float) -> SearchAt
 def build_native_solver() -> Path:
     source = ROOT_DIR / "native" / "costas_native.cpp"
     binary = ROOT_DIR / "native" / "costas_native"
-    if binary.exists() and binary.stat().st_mtime >= source.stat().st_mtime:
+    stamp_path = ROOT_DIR / "native" / "costas_native.build.json"
+    build_stamp = {
+        "system": platform.system(),
+        "machine": platform.machine(),
+    }
+
+    stamp_matches = False
+    if stamp_path.exists():
+        try:
+            stamp_matches = json.loads(stamp_path.read_text(encoding="utf-8")) == build_stamp
+        except json.JSONDecodeError:
+            stamp_matches = False
+
+    if binary.exists() and binary.stat().st_mtime >= source.stat().st_mtime and stamp_matches:
         return binary
 
     subprocess.run(
@@ -404,19 +487,28 @@ def build_native_solver() -> Path:
         capture_output=True,
         text=True,
     )
+    stamp_path.write_text(json.dumps(build_stamp, indent=2), encoding="utf-8")
     return binary
 
 
-def search_costas_array_native(order: int, *, time_limit_seconds: float) -> SearchAttempt:
+def search_costas_array_native(
+    order: int,
+    *,
+    time_limit_seconds: float,
+    assignments: Sequence[tuple[int, int]] = (),
+) -> SearchAttempt:
     try:
         binary = build_native_solver()
     except subprocess.CalledProcessError as exc:
         stderr = exc.stderr.strip() or exc.stdout.strip() or str(exc)
         raise RuntimeError(f"failed to build native solver: {stderr}") from exc
 
+    command = [str(binary), str(order), f"{time_limit_seconds}"]
+    command.extend(f"{column}={row}" for column, row in assignments)
+
     try:
         result = subprocess.run(
-            [str(binary), str(order), f"{time_limit_seconds}"],
+            command,
             check=False,
             cwd=ROOT_DIR,
             capture_output=True,
@@ -434,12 +526,15 @@ def search_costas_array_native(order: int, *, time_limit_seconds: float) -> Sear
 
     status = parsed.get("status", "unknown")
     nodes = parsed.get("nodes", "0")
+    fixed_detail = ""
+    if assignments:
+        fixed_detail = f" with {len(assignments)} fixed assignment(s)"
     if status == "found":
         example = [int(value) for value in parsed.get("example", "").split()]
         return SearchAttempt(
             backend="native",
             status="found",
-            detail=f"native C++ search found a witness after exploring {nodes} nodes",
+            detail=f"native C++ search found a witness after exploring {nodes} nodes{fixed_detail}",
             example=example,
         )
 
@@ -447,13 +542,13 @@ def search_costas_array_native(order: int, *, time_limit_seconds: float) -> Sear
         return SearchAttempt(
             backend="native",
             status="unsat",
-            detail=f"native C++ search proved infeasibility after exploring {nodes} nodes",
+            detail=f"native C++ search proved infeasibility after exploring {nodes} nodes{fixed_detail}",
         )
 
     return SearchAttempt(
         backend="native",
         status="unknown",
-        detail=f"native C++ search returned unknown after exploring {nodes} nodes",
+        detail=f"native C++ search returned unknown after exploring {nodes} nodes{fixed_detail}",
     )
 
 
@@ -463,15 +558,35 @@ def search_costas_array_sat(
     time_limit_seconds: float,
     cnf_path: Path | None = None,
     keep_cnf: bool = False,
+    sat_solver: str = "kissat",
+    assignments: Sequence[tuple[int, int]] = (),
+    window4_radius: int = 0,
+    forbidden_patterns_path: Path | None = None,
 ) -> SearchAttempt:
-    from costas_sat import solve_costas_with_kissat
+    if sat_solver == "cadical":
+        from costas_sat import solve_costas_with_cadical
 
-    result = solve_costas_with_kissat(
-        order,
-        time_limit_seconds=time_limit_seconds,
-        cnf_path=cnf_path,
-        keep_cnf=keep_cnf,
-    )
+        result = solve_costas_with_cadical(
+            order,
+            time_limit_seconds=time_limit_seconds,
+            cnf_path=cnf_path,
+            keep_cnf=keep_cnf,
+            assignments=tuple(assignments),
+            window4_radius=window4_radius,
+            forbidden_patterns_path=forbidden_patterns_path,
+        )
+    else:
+        from costas_sat import solve_costas_with_kissat
+
+        result = solve_costas_with_kissat(
+            order,
+            time_limit_seconds=time_limit_seconds,
+            cnf_path=cnf_path,
+            keep_cnf=keep_cnf,
+            assignments=tuple(assignments),
+            window4_radius=window4_radius,
+            forbidden_patterns_path=forbidden_patterns_path,
+        )
 
     return SearchAttempt(
         backend="sat",
@@ -550,24 +665,34 @@ def search_costas_array(
     time_limit_seconds: float,
     backend: str,
     candidate_budget: int,
+    assignments: Sequence[tuple[int, int]] = (),
     cnf_path: Path | None = None,
     keep_cnf: bool = False,
+    sat_solver: str = "kissat",
+    sat_window4_radius: int = 0,
+    sat_forbidden_patterns_path: Path | None = None,
 ) -> SearchResult:
     attempts = []
 
-    database_attempt = search_via_database(order, db_dir)
+    database_attempt = search_via_database(order, db_dir, assignments=assignments)
     if database_attempt is not None:
         attempts.append(database_attempt)
-        return SearchResult(
-            order=order,
-            status="found",
-            time_limit_seconds=time_limit_seconds,
-            backend="database",
-            attempts=attempts,
-            example=database_attempt.example,
-        )
+        if database_attempt.status == "found":
+            return SearchResult(
+                order=order,
+                status="found",
+                time_limit_seconds=time_limit_seconds,
+                backend="database",
+                attempts=attempts,
+                example=database_attempt.example,
+            )
 
-    neighbor_attempt = search_via_neighbors(order, db_dir, candidate_budget=candidate_budget)
+    neighbor_attempt = search_via_neighbors(
+        order,
+        db_dir,
+        candidate_budget=candidate_budget,
+        assignments=assignments,
+    )
     attempts.append(neighbor_attempt)
     if neighbor_attempt.status == "found":
         return SearchResult(
@@ -600,13 +725,21 @@ def search_costas_array(
         if solver_name == "ortools":
             attempt = search_costas_array_ortools(order, time_limit_seconds=solver_time)
         elif solver_name == "native":
-            attempt = search_costas_array_native(order, time_limit_seconds=solver_time)
+            attempt = search_costas_array_native(
+                order,
+                time_limit_seconds=solver_time,
+                assignments=assignments,
+            )
         elif solver_name == "sat":
             attempt = search_costas_array_sat(
                 order,
                 time_limit_seconds=solver_time,
                 cnf_path=cnf_path,
                 keep_cnf=keep_cnf,
+                sat_solver=sat_solver,
+                assignments=assignments,
+                window4_radius=sat_window4_radius,
+                forbidden_patterns_path=sat_forbidden_patterns_path,
             )
         else:
             attempt = search_costas_array_z3(order, time_limit_seconds=solver_time)
@@ -757,15 +890,33 @@ def render_search(result: SearchResult, *, stored_count: int | None) -> tuple[in
     return 2, "\n".join(lines)
 
 
-def export_cnf(order: int, output_path: Path) -> str:
+def export_cnf(
+    order: int,
+    output_path: Path,
+    *,
+    assignments: Sequence[tuple[int, int]] = (),
+    window4_radius: int = 0,
+) -> str:
     from costas_sat import write_costas_cnf
 
-    stats = write_costas_cnf(order, output_path.resolve())
-    return (
+    stats = write_costas_cnf(
+        order,
+        output_path.resolve(),
+        assignments=tuple(assignments),
+        window4_radius=window4_radius,
+    )
+    lines = [
         f"Wrote CNF for N={order} to {stats.path}\n"
         f"Variables: {stats.variable_count}\n"
         f"Clauses: {stats.clause_count}"
-    )
+    ]
+    if assignments:
+        lines.append(
+            "Assignments: " + " ".join(f"{column}={row}" for column, row in assignments)
+        )
+    if window4_radius > 0:
+        lines.append(f"Window4 endpoint radius: {window4_radius}")
+    return "\n".join(lines)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -843,6 +994,30 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Keep the generated CNF file when using the SAT backend.",
     )
+    search_parser.add_argument(
+        "--sat-solver",
+        choices=("kissat", "cadical"),
+        default="kissat",
+        help="External solver to use with the SAT backend.",
+    )
+    search_parser.add_argument(
+        "--assign",
+        action="append",
+        default=[],
+        metavar="COLUMN=ROW",
+        help="Fix a 1-based column to a 1-based row for native or SAT subproblems.",
+    )
+    search_parser.add_argument(
+        "--sat-window4-radius",
+        type=positive_int,
+        default=0,
+        help="Add redundant 4-column endpoint clauses to SAT for the first/last k windows.",
+    )
+    search_parser.add_argument(
+        "--sat-forbidden-patterns",
+        type=Path,
+        help="Optional JSON file mapping start_column to a list of globally forbidden 4-column tuples.",
+    )
 
     export_parser = subparsers.add_parser(
         "export-cnf",
@@ -850,6 +1025,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     export_parser.add_argument("order", type=positive_int, help="Order N to encode.")
     export_parser.add_argument("output", type=Path, help="Destination .cnf path.")
+    export_parser.add_argument(
+        "--assign",
+        action="append",
+        default=[],
+        metavar="COLUMN=ROW",
+        help="Optional fixed assignments to bake into the CNF.",
+    )
+    export_parser.add_argument(
+        "--sat-window4-radius",
+        type=positive_int,
+        default=0,
+        help="Add redundant 4-column endpoint clauses for the first/last k windows.",
+    )
 
     return parser
 
@@ -877,6 +1065,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return exit_code
 
         if args.command == "search":
+            assignments = parse_assignment_specs(args.assign, order=args.order)
+            if assignments and args.backend not in ("auto", "native", "sat"):
+                raise ValueError("--assign can only be used with --backend auto, native, or sat")
+
             path = db_dir / f"Costas_essense_N={args.order}.txt"
             stored_count = None
             if path.is_file():
@@ -888,15 +1080,27 @@ def main(argv: Sequence[str] | None = None) -> int:
                 time_limit_seconds=args.time_limit,
                 backend=args.backend,
                 candidate_budget=args.candidate_budget,
+                assignments=assignments,
                 cnf_path=args.cnf_path.resolve() if args.cnf_path else None,
                 keep_cnf=args.keep_cnf,
+                sat_solver=args.sat_solver,
+                sat_window4_radius=args.sat_window4_radius,
+                sat_forbidden_patterns_path=args.sat_forbidden_patterns,
             )
             exit_code, message = render_search(result, stored_count=stored_count)
             print(message)
             return exit_code
 
         if args.command == "export-cnf":
-            print(export_cnf(args.order, args.output))
+            assignments = parse_assignment_specs(args.assign, order=args.order)
+            print(
+                export_cnf(
+                    args.order,
+                    args.output,
+                    assignments=assignments,
+                    window4_radius=args.sat_window4_radius,
+                )
+            )
             return 0
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
