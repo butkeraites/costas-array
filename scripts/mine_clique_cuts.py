@@ -118,19 +118,30 @@ def main_entry(argv: list[str] | None = None) -> int:
     # Nodes: (start_col, (row0, row1, row2, row3))
     G = nx.Graph()
     
+    import random
+    MAX_NODES = 20000
     all_patterns = []
+    total_seen = 0
     
-    # 1. Generate all feasible 4-col windows
+    # 1. Generate all feasible 4-col windows using Reservoir Sampling
     for start_col in range(1, order - 2):
         print(f"   Building domains for window starting at col {start_col}...")
-        tuples = list(iter_consecutive_window4_feasible_tuples(domain_result.allowed_rows, start_col))
-        for p in tuples:
+        for p in iter_consecutive_window4_feasible_tuples(domain_result.allowed_rows, start_col):
             node = (start_col, p)
-            all_patterns.append(node)
-            G.add_node(node)
+            if total_seen < MAX_NODES:
+                all_patterns.append(node)
+            else:
+                j = random.randint(0, total_seen)
+                if j < MAX_NODES:
+                    all_patterns[j] = node
+            total_seen += 1
+
+    # Add the uniformly sampled reservoir to the graph
+    for node in all_patterns:
+        G.add_node(node)
 
     n_nodes = len(all_patterns)
-    print(f"Total valid 4-col candidates: {n_nodes}")
+    print(f"Sampled {n_nodes} nodes out of {total_seen} globally available Costas 4-column sub-patterns.")
     if n_nodes == 0:
         print("No candidates found.")
         return 0

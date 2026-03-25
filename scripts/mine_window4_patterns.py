@@ -101,16 +101,15 @@ def main_entry(argv: list[str] | None = None) -> int:
         print("Base assignments are infeasible.")
         return 2
 
-    # Collect all feasible 4-column patterns
-    tasks: list[tuple[int, tuple[int, int, int, int]]] = []
-    
+    # Count total patterns without storing them
+    total_patterns = 0
     for start in range(1, args.order - 2):
         for rows in iter_consecutive_window4_feasible_tuples(domain_result.allowed_rows, start):
-            tasks.append((start, rows))
+            total_patterns += 1
             
-    print(f"Total locally feasible 4-column patterns: {len(tasks)}")
+    print(f"Total locally feasible 4-column patterns: {total_patterns}")
 
-    if not tasks:
+    if total_patterns == 0:
         print("No feasible patterns to check.")
         return 0
 
@@ -121,19 +120,32 @@ def main_entry(argv: list[str] | None = None) -> int:
     completed = 0
     found_forbidden = 0
     
+    def task_generator():
+        for start in range(1, args.order - 2):
+            for rows in iter_consecutive_window4_feasible_tuples(domain_result.allowed_rows, start):
+                yield (start, rows)
+                
+    tasks_iter = task_generator()
     future_to_task = {}
+    max_queued = args.workers * 4
+    
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
-        for start_col, rows in tasks:
-            future = executor.submit(
-                check_pattern,
-                order=args.order,
-                base_assignments=assignments,
-                start_col=start_col,
-                rows=rows,
-                backend=args.backend,
-                time_limit_seconds=args.time_limit,
-            )
-            future_to_task[future] = (start_col, rows)
+        # Initial queue fill
+        for _ in range(max_queued):
+            try:
+                start_col, rows = next(tasks_iter)
+                future = executor.submit(
+                    check_pattern,
+                    order=args.order,
+                    base_assignments=assignments,
+                    start_col=start_col,
+                    rows=rows,
+                    backend=args.backend,
+                    time_limit_seconds=args.time_limit,
+                )
+                future_to_task[future] = (start_col, rows)
+            except StopIteration:
+                break
             
         while future_to_task:
             done, _ = wait(future_to_task, return_when=FIRST_COMPLETED)
@@ -151,8 +163,27 @@ def main_entry(argv: list[str] | None = None) -> int:
                     print(f"Error checking pattern {rows} at col {start_col}: {e}")
                     
                 completed += 1
-                if completed % 100 == 0 or completed == len(tasks):
-                    print(f"Checked {completed}/{len(tasks)} patterns, found {found_forbidden} globally non-extendable.")
+                if completed % 1000 == 0 or completed == total_patterns:
+                    print(f"Checked {completed}/{total_patterns} patterns, found {found_forbidden} globally non-extendable.")
+                    # Periodically flush to file natively to save progress across long runs
+                    with args.output_file.open("w", encoding="utf-8") as f:
+                        json.dump(forbidden_patterns, f, indent=2)
+
+                # Replenish queue
+                try:
+                    next_start, next_rows = next(tasks_iter)
+                    new_future = executor.submit(
+                        check_pattern,
+                        order=args.order,
+                        base_assignments=assignments,
+                        start_col=next_start,
+                        rows=next_rows,
+                        backend=args.backend,
+                        time_limit_seconds=args.time_limit,
+                    )
+                    future_to_task[new_future] = (next_start, next_rows)
+                except StopIteration:
+                    pass
 
     # Save to file
     with args.output_file.open("w", encoding="utf-8") as f:

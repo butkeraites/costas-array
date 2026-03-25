@@ -340,6 +340,7 @@ def solve_costas_with_kissat(
     assignments: tuple[tuple[int, int], ...] = (),
     window4_radius: int = 0,
     forbidden_patterns_path: Path | None = None,
+    clique_cuts_path: Path | None = None,
 ) -> SatResult:
     solver_path = shutil.which("kissat")
     if solver_path is None:
@@ -365,6 +366,7 @@ def solve_costas_with_kissat(
         assignments=assignments,
         window4_radius=window4_radius,
         forbidden_patterns_path=forbidden_patterns_path,
+        clique_cuts_path=clique_cuts_path,
     )
 
     try:
@@ -447,6 +449,7 @@ def solve_costas_with_cadical(
     assignments: tuple[tuple[int, int], ...] = (),
     window4_radius: int = 0,
     forbidden_patterns_path: Path | None = None,
+    clique_cuts_path: Path | None = None,
 ) -> SatResult:
     solver_path = shutil.which("cadical")
     if solver_path is None:
@@ -472,6 +475,7 @@ def solve_costas_with_cadical(
         assignments=assignments,
         window4_radius=window4_radius,
         forbidden_patterns_path=forbidden_patterns_path,
+        clique_cuts_path=clique_cuts_path,
     )
 
     try:
