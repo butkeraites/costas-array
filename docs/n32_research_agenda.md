@@ -116,17 +116,19 @@ Inference:
 
 These are conjectural or partially proved targets worth attacking now.
 
-### Target A. Dyadic Injectivity Obstruction
+### Target A. Dyadic Injectivity Obstruction — REFUTED
 
-Goal:
+Goal (original):
 
 - Show that no permutation of `[32]` can make all layers
   `Delta_h(i) = f(i + h) - f(i)` injective for `h in {1, 2, 4, 8, 16}`.
 
-Why it is plausible:
-
-- `32` is the first unresolved power of two in the dataset.
-- Power-of-two shifts create nested overlap patterns in the difference triangle.
+**Status: FALSE.** A permutation of `[32]` with all five dyadic layers injective
+(but not a full Costas array) was constructed and verified, and dyadic-feasible
+permutations are provably abundant (counts grow far faster than Costas arrays).
+See [`dyadic_obstruction_findings.md`](./dyadic_obstruction_findings.md). Any
+impossibility proof for `N=32` must therefore use the non-dyadic shifts; the
+power-of-two structure alone is not an obstruction.
 
 ### Target B. Half-Shift Parity Lemma
 

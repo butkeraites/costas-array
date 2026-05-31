@@ -13,8 +13,11 @@ from typing import Any
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import main
+from progress import ProgressBar
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -56,6 +59,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--focus-widths",
         help="Optional comma-separated width priorities to guide native branching.",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-run shards even if a saved result.json already exists (default: resume/skip).",
+    )
+    parser.add_argument(
+        "--no-progress",
+        dest="progress",
+        action="store_false",
+        help="Disable the live progress bar (it auto-disables when output is not a TTY).",
+    )
+    parser.set_defaults(progress=True)
     return parser
 
 
@@ -95,6 +110,21 @@ def parse_native_output(stdout: str) -> dict[str, Any]:
     }
 
 
+def load_completed_shard(shard_dir: Path) -> dict[str, Any] | None:
+    """Return a previously-saved shard result if it exists and parses, else None."""
+    result_path = shard_dir / "result.json"
+    if not result_path.is_file():
+        return None
+    try:
+        data = json.loads(result_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    if "status" in data and "id" in data:
+        data["resumed"] = True
+        return data
+    return None
+
+
 def run_one_shard(
     *,
     binary: Path,
@@ -103,9 +133,15 @@ def run_one_shard(
     shard: dict[str, Any],
     output_dir: Path,
     focus_widths: str | None,
+    force: bool = False,
 ) -> dict[str, Any]:
     shard_dir = output_dir / shard["id"]
     shard_dir.mkdir(parents=True, exist_ok=True)
+
+    if not force:
+        cached = load_completed_shard(shard_dir)
+        if cached is not None:
+            return cached
 
     command = [str(binary), str(order), str(time_limit)]
     if focus_widths:
@@ -183,6 +219,12 @@ def main_entry(argv: list[str] | None = None) -> int:
 
     future_to_shard: dict[Future[dict[str, Any]], dict[str, Any]] = {}
     found_result: dict[str, Any] | None = None
+    resumed = 0
+    bar = ProgressBar(
+        len(selected_shards),
+        enabled=args.progress,
+        label=f"N={args.order} shards",
+    )
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
         for shard in selected_shards:
             future = executor.submit(
@@ -193,6 +235,7 @@ def main_entry(argv: list[str] | None = None) -> int:
                 shard=shard,
                 output_dir=output_dir,
                 focus_widths=args.focus_widths,
+                force=args.force,
             )
             future_to_shard[future] = shard
 
@@ -202,10 +245,21 @@ def main_entry(argv: list[str] | None = None) -> int:
                 shard_result = future.result()
                 summary["results"].append(shard_result)
                 summary["counts"][shard_result["status"]] += 1
+                if shard_result.get("resumed"):
+                    resumed += 1
                 del future_to_shard[future]
                 with progress_path.open("a", encoding="utf-8") as handle:
                     handle.write(json.dumps(shard_result) + "\n")
                 summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+
+                counts = summary["counts"]
+                bar.update(
+                    inc=1,
+                    found=counts["found"],
+                    unsat=counts["unsat"],
+                    unknown=counts["unknown"],
+                    resumed=resumed,
+                )
 
                 if shard_result["status"] == "found":
                     found_result = shard_result
@@ -213,6 +267,8 @@ def main_entry(argv: list[str] | None = None) -> int:
                         pending.cancel()
                     future_to_shard.clear()
                     break
+    bar.close()
+    summary["resumed_shards"] = resumed
 
     summary["results"].sort(key=lambda item: item["index"])
     if found_result is not None:
@@ -226,7 +282,7 @@ def main_entry(argv: list[str] | None = None) -> int:
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
     print(f"Order N={args.order}")
-    print(f"Selected shards: {len(selected_shards)} of {len(all_shards)}")
+    print(f"Selected shards: {len(selected_shards)} of {len(all_shards)} ({resumed} resumed from cache)")
     print(
         "Status counts: "
         f"found={summary['counts']['found']} "
