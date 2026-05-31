@@ -159,16 +159,27 @@ Run a repeatable backend comparison suite and store logs:
 python3 scripts/run_search_suite.py 32 --time-limit 180
 ```
 
-Run native endpoint shards in parallel and store one result per shard:
+Run native endpoint shards in parallel and store one result per shard. A live
+progress bar with ETA and running found/unsat/unknown counts is shown on a TTY:
 
 ```bash
 python3 scripts/run_native_shards.py 32 --time-limit 300 --workers 8
 ```
 
-Split the shard set across multiple machines:
+The run is resumable: shards that already have a saved `result.json` are skipped,
+so you can stop and restart a long campaign without redoing work (use `--force`
+to recompute, `--no-progress` to silence the bar).
+
+Split the shard set across multiple machines (each machine takes one offset);
+because results are written per shard, the offsets share one output directory
+and resume independently:
 
 ```bash
-python3 scripts/run_native_shards.py 32 --time-limit 300 --workers 8 --shard-stride 2 --shard-offset 0
+# machine 0 of 4
+python3 scripts/run_native_shards.py 32 --time-limit 600 --workers 8 --shard-stride 4 --shard-offset 0
+# machine 1 of 4
+python3 scripts/run_native_shards.py 32 --time-limit 600 --workers 8 --shard-stride 4 --shard-offset 1
+# ... offsets 2 and 3 likewise
 ```
 
 Summarize dyadic difference-layer statistics for research work:
@@ -176,6 +187,17 @@ Summarize dyadic difference-layer statistics for research work:
 ```bash
 python3 scripts/analyze_dyadic_profiles.py 16 31 34
 ```
+
+Search in parallel for a Costas-array witness of a given order (stochastic local
+search with a live status line; saves/verifies the best permutation found):
+
+```bash
+python3 scripts/search_witness.py 12 --workers 8 --time-limit 60
+```
+
+Note: local search reliably solves only moderate orders; its success rate falls
+off sharply with order (see `docs/dyadic_obstruction_findings.md`), so for large
+open orders such as `32` it is a very-long-odds probe rather than a likely route.
 
 Build a low-energy near-miss cloud for function-space analysis of one order:
 
