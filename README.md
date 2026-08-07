@@ -7,7 +7,7 @@ This repository stores a curated dataset of Costas arrays and provides a small
 Python CLI for exploring and validating that data.
 
 > **Data provenance:** the arrays in `db/` are third-party material under their
-> own licence — see [`db/SOURCE.md`](db/SOURCE.md). The MIT licence here covers
+> own licence — see [`db/SOURCE.md`](db/SOURCE.md) and [`NOTICE`](NOTICE). The MIT licence here covers
 > the source code only. Every shipped array is re-verified against the Costas
 > definition on each CI run.
 

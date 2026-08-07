@@ -1,0 +1,13 @@
+Costas Array Dataset
+Copyright (c) 2026 Renan Brito Cano Butkeraites
+
+The MIT licence in LICENSE covers the SOURCE CODE in this repository.
+
+It does NOT cover the Costas array data in db/. That data is third-party
+material with its own upstream licence and attribution requirements, believed
+to be James K. Beard's "Costas arrays and enumeration to order 1030"
+(https://jameskbeard.com/Files.html), distributed under CC BY 4.0.
+
+See db/SOURCE.md for the full provenance statement and for the measured
+coverage of costas_generate.py, which rebuilds part of that data from
+published mathematics.
