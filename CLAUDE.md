@@ -17,7 +17,7 @@ python3 -m pip install -r requirements.txt   # z3-solver, ortools, networkx
 brew install kissat                           # external SAT backend (optional: cadical)
 ```
 
-There is a checked-in `.venv/` (Python 3.11). Use `python3` directly.
+Use `python3` directly; install dependencies with `python3 -m pip install -r requirements.txt`.
 
 ```bash
 # CLI (default subcommand is `summary`)
@@ -80,8 +80,8 @@ guidance / extra constraints.
 
 - `build_near_miss_cloud.py` — low-energy near-miss nodes + transposition graph.
 - `mine_width_pressure.py`, `mine_window4_patterns.py`, `mine_clique_cuts.py` —
-  mine reusable constraints/branch-order hints (e.g. `clique_cuts_n10.json`,
-  `forbidden_patterns_n10.json`) from the cloud or enumeration.
+  mine reusable constraints/branch-order hints (e.g. `data/mined/clique_cuts_n10.json`,
+  `data/mined/forbidden_patterns_n10.json`) from the cloud or enumeration.
 - `run_native_shards.py`, `run_lp_shards.py` — parallel shard runners
   (`--workers`, `--shard-stride`/`--shard-offset` to split across machines).
 - `lp_shard_relaxation.py` — OR-Tools LP relaxation over selected widths /

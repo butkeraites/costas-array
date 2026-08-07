@@ -22,10 +22,22 @@ from local_window4 import (
 
 try:
     from ortools.linear_solver import pywraplp
-except ImportError as exc:  # pragma: no cover - exercised in integration environments
-    raise SystemExit(
-        "lp relaxation requires ortools; install dependencies with 'python3 -m pip install -r requirements.txt'"
-    ) from exc
+except ImportError:  # pragma: no cover - exercised on a dependency-free clone
+    # Importing this module must not fail: the parsing helpers below are useful
+    # without a solver, and the test suite imports the module to reach them.
+    # The requirement is enforced at the point of use instead.
+    pywraplp = None
+
+ORTOOLS_REQUIRED = (
+    "lp relaxation requires ortools; install dependencies with "
+    "'python3 -m pip install -r requirements.txt'"
+)
+
+
+def require_ortools() -> None:
+    """Raise a clear error if the solver backend is unavailable."""
+    if pywraplp is None:
+        raise RuntimeError(ORTOOLS_REQUIRED)
 
 
 @dataclass
@@ -127,6 +139,7 @@ def parse_width_spec(raw: str, order: int) -> list[int]:
 
 
 def solver_status_name(status: int) -> str:
+    require_ortools()
     names = {
         pywraplp.Solver.OPTIMAL: "OPTIMAL",
         pywraplp.Solver.FEASIBLE: "FEASIBLE",
@@ -151,6 +164,7 @@ def solve_relaxation(
     forbidden_patterns_path: Path | None = None,
     clique_cuts_path: Path | None = None,
 ) -> RelaxationResult:
+    require_ortools()
     domain_result = allowed_rows_by_column(order, assignments)
     if domain_result.status == "infeasible":
         return RelaxationResult(

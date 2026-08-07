@@ -1,7 +1,15 @@
 # Costas Array Dataset
 
+[![tests](https://github.com/butkeraites/costas-array/actions/workflows/tests.yml/badge.svg)](https://github.com/butkeraites/costas-array/actions/workflows/tests.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 This repository stores a curated dataset of Costas arrays and provides a small
 Python CLI for exploring and validating that data.
+
+> **Data provenance:** the arrays in `db/` are third-party material under their
+> own licence — see [`db/SOURCE.md`](db/SOURCE.md). The MIT licence here covers
+> the source code only. Every shipped array is re-verified against the Costas
+> definition on each CI run.
 
 To use the solver-backed search command, install dependencies first:
 
@@ -274,10 +282,15 @@ For the open `N=32` case, see the research memo at
 
 ## Notes
 
-- The repository is intentionally lightweight: it validates stored data, but it
-  does not generate Costas arrays from scratch.
-- The file naming convention keeps the original `Costas_essense` prefix already
-  present in the dataset.
+- `costas_generate.py` builds Costas arrays from first principles — exhaustive
+  backtracking search, plus the Welch and Golomb/Lempel algebraic constructions
+  over GF(p^k). It reproduces `db/` exactly for orders 2–7 and a subset above
+  that; `db/SOURCE.md` states the coverage precisely rather than implying more.
+- `tests/test_db_integrity.py` re-derives the Costas property for all 9,217
+  shipped arrays on every run, and checks that no two entries of the same order
+  lie in the same D4 orbit.
+- The file naming convention keeps the `Costas_essense` prefix from the upstream
+  dataset, typo included, so filenames stay traceable to their source.
 - For background on the open search problem, see the
   [CSPLib Costas array page](https://www.csplib.org/Problems/prob076/), which
   notes that some orders such as `32` remain unresolved in the literature.

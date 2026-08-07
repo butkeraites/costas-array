@@ -13,6 +13,11 @@ for path in (ROOT_DIR, SCRIPT_DIR):
 
 import lp_shard_relaxation as lp_relaxation
 
+HAS_ORTOOLS = lp_relaxation.pywraplp is not None
+requires_ortools = unittest.skipUnless(
+    HAS_ORTOOLS, "ortools is not installed; see requirements.txt"
+)
+
 
 class LpShardRelaxationTests(unittest.TestCase):
     def test_parse_width_spec(self) -> None:
@@ -20,6 +25,7 @@ class LpShardRelaxationTests(unittest.TestCase):
         self.assertEqual(lp_relaxation.parse_width_spec("dyadic", 10), [1, 2, 4, 8])
         self.assertEqual(lp_relaxation.parse_width_spec("1,3,3,5", 8), [1, 3, 5])
 
+    @requires_ortools
     def test_small_feasible_shard(self) -> None:
         result = lp_relaxation.solve_relaxation(
             4,
@@ -31,6 +37,7 @@ class LpShardRelaxationTests(unittest.TestCase):
         )
         self.assertEqual(result.status, "feasible")
 
+    @requires_ortools
     def test_small_infeasible_shard(self) -> None:
         result = lp_relaxation.solve_relaxation(
             4,
@@ -42,6 +49,7 @@ class LpShardRelaxationTests(unittest.TestCase):
         )
         self.assertEqual(result.status, "infeasible")
 
+    @requires_ortools
     def test_symmetry_domain_shortcut_detects_impossible_endpoint(self) -> None:
         result = lp_relaxation.solve_relaxation(
             4,
@@ -54,6 +62,7 @@ class LpShardRelaxationTests(unittest.TestCase):
         self.assertEqual(result.status, "infeasible")
         self.assertEqual(result.solver_status, "DOMAIN_INFEASIBLE")
 
+    @requires_ortools
     def test_triangle_mode_stays_feasible_on_small_shard(self) -> None:
         result = lp_relaxation.solve_relaxation(
             4,
@@ -65,6 +74,7 @@ class LpShardRelaxationTests(unittest.TestCase):
         )
         self.assertEqual(result.status, "feasible")
 
+    @requires_ortools
     def test_window4_triangle_mode_stays_feasible_on_small_shard(self) -> None:
         result = lp_relaxation.solve_relaxation(
             4,
@@ -76,6 +86,7 @@ class LpShardRelaxationTests(unittest.TestCase):
         )
         self.assertEqual(result.status, "feasible")
 
+    @requires_ortools
     def test_endpoint_quad_mode_stays_feasible_on_small_shard(self) -> None:
         result = lp_relaxation.solve_relaxation(
             4,
@@ -89,6 +100,7 @@ class LpShardRelaxationTests(unittest.TestCase):
         )
         self.assertEqual(result.status, "feasible")
 
+    @requires_ortools
     def test_main_entry_prints_summary(self) -> None:
         stdout = io.StringIO()
         stderr = io.StringIO()
